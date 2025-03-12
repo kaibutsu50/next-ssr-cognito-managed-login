@@ -1,5 +1,14 @@
 import NextAuth from 'next-auth'
 import Cognito from 'next-auth/providers/cognito'
+import { saveTokens, getTokens } from '@/lib/token'
+
+/**
+ * このファイルには、AuthJSのバグを回避するための一時的な work around が含まれています
+ * 問題：トークンリフレッシュ時に新しいトークンがセッションに正しく保存されない
+ * https://github.com/nextauthjs/next-auth/issues/7558
+ *
+ * このプログラムでは、トークンの独自管理を行うことで、この問題を回避しています
+ */
 
 // セッションおよびユーザーの拡張型を定義
 declare module 'next-auth' {
@@ -28,7 +37,7 @@ declare module 'next-auth' {
   }
 }
 
-export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
+export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
   providers: [
     Cognito({
@@ -50,7 +59,7 @@ export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
   },
   callbacks: {
     // トークン取得時の処理
-    async jwt ({ token, account }) {      
+    async jwt({ token, account }) {
       // 初回ログイン時にトークンを保存
       if (account) {
         token.idToken = account.id_token
@@ -58,35 +67,62 @@ export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
         token.refreshToken = account.refresh_token
         // expires_atは秒単位のUNIX時間で提供されるため、ミリ秒に変換
         token.expiresAt = account.expires_at ? account.expires_at * 1000 : undefined
+        
+        // 独自Cookieにも保存（AuthJSのバグへの対応）
+        await saveTokens({
+          idToken: account.id_token,
+          accessToken: account.access_token,
+          expiresAt: account.expires_at ? account.expires_at * 1000 : undefined
+        })
       }
 
-      // アクセストークンとリフレッシュトークンが存在し、有効期限が設定されている場合のみリフレッシュを試みる
-      if (token.accessToken && token.refreshToken && token.expiresAt &&
-          typeof token.expiresAt === 'number' &&
-          Date.now() > token.expiresAt - 1 * 60 * 1000) {
+      // カスタムCookieからトークンデータを取得（こちらが最新状態）
+      const customTokens = await getTokens()
+      
+      // 有効期限情報を取得（カスタムCookie優先）
+      const expiresAt = customTokens?.expiresAt || token.expiresAt
+      
+      // アクセストークンとリフレッシュトークンが存在し、有効期限が近づいている場合のみリフレッシュを試みる
+      if (token.refreshToken && expiresAt &&
+          typeof expiresAt === 'number' &&
+          Date.now() > expiresAt - 1 * 60 * 1000) {
         try {
           const response = await fetch(
             `https://cognito-idp.${process.env.AWS_REGION}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}/.well-known/openid-configuration`
           ).then(res => res.json())
-
-          const tokens = await fetch(response.token_endpoint, {
+          
+          // 新しいトークンを要求
+          const authHeader = Buffer.from(
+            `${process.env.COGNITO_APP_CLIENT_ID}:${process.env.COGNITO_APP_CLIENT_SECRET}`
+          ).toString('base64')
+          const newTokens = await fetch(response.token_endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization': `Basic ${authHeader}`
+            },
             body: new URLSearchParams({
               grant_type: 'refresh_token',
-              client_id: process.env.COGNITO_APP_CLIENT_ID!,
               refresh_token: token.refreshToken as string
             })
           }).then(res => res.json())
 
           // 新しいトークンで更新
-          token.idToken = tokens.id_token
-          token.accessToken = tokens.access_token
+          token.idToken = newTokens.id_token
+          token.accessToken = newTokens.access_token
           // refreshTokenは新しく発行されない場合があるので、既存のものを保持
-          if (tokens.refresh_token) {
-            token.refreshToken = tokens.refresh_token
+          if (newTokens.refresh_token) {
+            token.refreshToken = newTokens.refresh_token
           }
-          token.expiresAt = Date.now() + tokens.expires_in * 1000
+          const newExpiresAt = Date.now() + newTokens.expires_in * 1000
+          token.expiresAt = newExpiresAt
+          
+          // 独自Cookieにも保存（AuthJSのバグへの対応）
+          await saveTokens({
+            idToken: newTokens.id_token,
+            accessToken: newTokens.access_token,
+            expiresAt: newExpiresAt
+          })
         } catch (error) {
           // エラー時はトークンをクリアしてログアウトを強制
           return {}
@@ -96,13 +132,16 @@ export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
       return token
     },
     // セッション作成時の処理
-    async session ({ session, token }) {
-      // セッションにトークンを追加
+    async session({ session, token }) {
+      // 独自のCookieからトークンデータを取得（優先）
+      const customTokens = await getTokens()
+      
+      // セッションにトークンを追加（独自Cookie優先）
       return {
         ...session,
-        idToken: token.idToken,
-        accessToken: token.accessToken,
-        expiresAt: token.expiresAt,
+        idToken: customTokens?.idToken || token.idToken,
+        accessToken: customTokens?.accessToken || token.accessToken,
+        expiresAt: customTokens?.expiresAt || token.expiresAt,
         user: {
           ...session.user,
           sub: token.sub
@@ -113,45 +152,22 @@ export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
 })
 
 // サーバーコンポーネントからセッションを取得する関数
-export async function getSession () {
+export async function getSession() {
+  // Auth.jsのセッションを取得
+  const session = await auth()
   
-  const session = await getAuthSession()
-  if (!session) {
+  // 独自のCookieからトークンデータを取得（優先）
+  const customTokens = await getTokens()
+  
+  if (!session && !customTokens) {
     return null
   }
-
+  
   return {
-    accessToken: session.accessToken,
-    idToken: session.idToken,
-    profile: session.user
-  }
-}
-
-// 現在のユーザー情報を取得する関数（既存のシステムとの互換性維持のため元の名前に戻す）
-export async function auth () {
-  try {
-    const session = await getAuthSession()
-
-    if (!session) {
-      return null
-    }
-
-    const result = {
-      user: {
-        emailVerifiedCognito: true,
-        displayName: session.user?.name,
-        email: session.user?.email,
-        sub: session.user?.sub,
-        name: session.user?.name,
-        idToken: session.idToken,
-        accessToken: session.accessToken,
-        expiresAt: session.expiresAt
-      }
-    }
-
-    return result
-  } catch (error) {
-    throw error
+    // 独自Cookie優先、ない場合はAuth.jsのセッションを使用
+    accessToken: customTokens?.accessToken || session?.accessToken,
+    idToken: customTokens?.idToken || session?.idToken,
+    profile: session?.user
   }
 }
 
