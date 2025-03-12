@@ -19,7 +19,7 @@ export interface TokenData {
  */
 export async function saveTokens(tokenData: TokenData) {
   // トークンデータを暗号化
-  const encryptedData = encrypt(JSON.stringify(tokenData), process.env.AUTH_SECRET!)
+  const encryptedData = await encrypt(JSON.stringify(tokenData), process.env.AUTH_SECRET!)
   
   // Next.js 15では cookies() が Promise を返すように変更
   const cookieStore = await cookies()
@@ -49,7 +49,7 @@ export async function getTokens(): Promise<TokenData | null> {
     if (!tokenCookie) return null
     
     // トークンデータを復号化
-    const decryptedData = decrypt(tokenCookie.value, process.env.AUTH_SECRET!)
+    const decryptedData = await decrypt(tokenCookie.value, process.env.AUTH_SECRET!)
     return JSON.parse(decryptedData) as TokenData
   } catch (error) {
     console.error('トークンcookieの読み込み中にエラーが発生しました:', error)
