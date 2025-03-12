@@ -35,8 +35,6 @@ export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
       clientId: process.env.COGNITO_APP_CLIENT_ID!,
       clientSecret: process.env.COGNITO_APP_CLIENT_SECRET!,
       issuer: `https://cognito-idp.${process.env.AWS_REGION}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}`,
-      
-      // シンプルな認可設定
       authorization: {
         url: process.env.COGNITO_MANAGED_LOGIN_URL ?? '',
         params: {
@@ -111,12 +109,6 @@ export const { handlers, auth: getAuthSession, signIn, signOut } = NextAuth({
         }
       }
     }
-  },
-  pages: {
-    signIn: '/signin', // カスタムサインインページ
-    signOut: '/', // サインアウト後のリダイレクト先
-    error: '/signin', // エラー時のページ
-    newUser: '/' // 新規ユーザー登録時のリダイレクト先
   }
 })
 

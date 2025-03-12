@@ -4,9 +4,8 @@ import { signIn } from '@/lib/auth'
 
 export async function handleSignIn () {  
   try {
-    // 明示的にコールバックURLを設定
     await signIn('cognito', {
-      redirect: true,
+      redirectTo: '/'
     })
   } catch (error) {
     throw error

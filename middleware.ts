@@ -17,10 +17,8 @@ const publicPaths = [
 export async function middleware (request: NextRequest) {
   const path = request.nextUrl.pathname
   
-  // コールバックパスと公開パスの場合は認証処理をスキップ
-  if (path.includes('/api/auth/callback') ||
-      path.startsWith('/auth/callback') ||
-      publicPaths.some(publicPath => path.startsWith(publicPath))) {
+  // 公開パスの場合は認証処理をスキップ
+  if (publicPaths.some(publicPath => path.startsWith(publicPath))) {
     return NextResponse.next()
   }
 
@@ -31,7 +29,6 @@ export async function middleware (request: NextRequest) {
       const signInUrl = new URL('/signin', request.url)
       return NextResponse.redirect(signInUrl)
     }
-
     return NextResponse.next()
   } catch (error) {
     const signInUrl = new URL('/signin', request.url)
