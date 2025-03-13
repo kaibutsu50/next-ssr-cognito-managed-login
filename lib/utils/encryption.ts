@@ -22,7 +22,6 @@ export async function encrypt(data: string, secret: string): Promise<string> {
       salt: SALT,
     })
   } catch (error) {
-    console.error('暗号化エラー:', error)
     throw error
   }
 }
@@ -43,7 +42,6 @@ export async function decrypt(encryptedData: string, secret: string): Promise<st
     if (!decoded?.data) throw new Error('復号化されたデータが不正です')
     return decoded.data as string
   } catch (error) {
-    console.error('復号化エラー:', error)
     throw error
   }
 }
